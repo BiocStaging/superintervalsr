@@ -5,3 +5,7 @@ Maintainer: Kez Cleal. Package license: MIT + file LICENSE.
 R wrapper maintenance, documentation revisions and regression tests in
 versions 0.99.5 and 0.99.6 were assisted by OpenAI Codex (October 2026).
 The package maintainer remains responsible for review and maintenance.
+
+Assisted-by: OpenAI Codex (October 2026), versions 0.99.5 to 0.99.7.
+Assisted-by: Anthropic Claude (November 2026), version 0.99.8 review
+revisions (vignette rewrite, accessors, vectorization, interrupt checks).

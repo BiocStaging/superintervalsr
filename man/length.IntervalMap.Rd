@@ -15,3 +15,7 @@ Number of intervals in the map
 \description{
 Get the length of an IntervalMap
 }
+\examples{
+im <- IntervalMap(c(1, 10), ends = c(5, 15))
+length(im)  # 2
+}

@@ -1,4 +1,5 @@
-# R wrapper maintenance assisted by OpenAI Codex (October 2026).
+# Assisted-by: OpenAI Codex (October 2026), R wrapper maintenance.
+# Assisted-by: Anthropic Claude (November 2026), review revisions.
 # Internal validation: never silently truncate coordinates or accept R's NA sentinel.
 .integer_input <- function(x, scalar = FALSE) {
     if (!is.numeric(x) || anyNA(x) || any(!is.finite(x)) ||
@@ -17,6 +18,10 @@
     if (any(start > end))
         stop("start must be less than or equal to end", call. = FALSE)
     invisible(NULL)
+}
+# Split a data.frame into one named list per row, column-wise (no row loop).
+.row_lists <- function(df) {
+    .mapply(function(...) list(...), dots = as.list(df), MoreArgs = NULL)
 }
 .map_input <- function(x) {
     if (!inherits(x, "IntervalMap") || typeof(x) != "externalptr")
@@ -143,16 +148,13 @@ IntervalMap.GRanges <- function(x, value_column = NULL, seqname = NULL, ...) {
     ends <- GenomicRanges::end(x)
 
     if (!is.null(value_column)) {
-        if (!value_column %in% colnames(S4Vectors::mcols(x))) {
+        if (value_column %notin% colnames(S4Vectors::mcols(x))) {
             stop("Column '", value_column, "' not found in GRanges metadata")
         }
         values <- S4Vectors::mcols(x)[[value_column]]
     } else if (ncol(S4Vectors::mcols(x)) > 0) {
         # Convert each row to a named list (preserves all metadata)
-        mcols_df <- as.data.frame(S4Vectors::mcols(x))
-        values <- lapply(seq_len(nrow(mcols_df)), function(i) {
-            as.list(mcols_df[i, , drop = FALSE])
-        })
+        values <- .row_lists(as.data.frame(S4Vectors::mcols(x)))
     } else {
         values <- list()
     }
@@ -174,17 +176,17 @@ IntervalMap.GRanges <- function(x, value_column = NULL, seqname = NULL, ...) {
 #' @export
 IntervalMap.data.frame <- function(x, start_column = "start", end_column = "end",
                                     value_column = NULL, ...) {
-    if (!start_column %in% colnames(x)) {
+    if (start_column %notin% colnames(x)) {
         stop("Start column '", start_column, "' not found")
     }
-    if (!end_column %in% colnames(x)) {
+    if (end_column %notin% colnames(x)) {
         stop("End column '", end_column, "' not found")
     }
     starts <- .integer_input(x[[start_column]])
     ends <- .integer_input(x[[end_column]])
 
     if (!is.null(value_column)) {
-        if (!value_column %in% colnames(x)) {
+        if (value_column %notin% colnames(x)) {
             stop("Value column '", value_column, "' not found")
         }
         values <- x[[value_column]]
@@ -192,9 +194,7 @@ IntervalMap.data.frame <- function(x, start_column = "start", end_column = "end"
         # Use all other columns as named lists
         other_cols <- setdiff(colnames(x), c(start_column, end_column))
         if (length(other_cols) > 0) {
-            values <- lapply(seq_len(nrow(x)), function(i) {
-                as.list(x[i, other_cols, drop = FALSE])
-            })
+            values <- .row_lists(x[other_cols])
         } else {
             values <- list()
         }
@@ -230,7 +230,7 @@ IntervalMap.data.frame <- function(x, start_column = "start", end_column = "end"
 #' print(gr)
 as_granges <- function(items_result, seqname = "chr1", valuename = "value") {
     if (methods::is(items_result, "SuperIntervalMap")) {
-        return(items_result@ranges)
+        return(.sim_ranges(items_result))
     }
     if (!requireNamespace("GenomicRanges", quietly = TRUE)) {
         stop("GenomicRanges package required for this functionality")
@@ -262,6 +262,9 @@ as_granges <- function(items_result, seqname = "chr1", valuename = "value") {
 #' @param x IntervalMap object
 #' @return Number of intervals in the map
 #' @export
+#' @examples
+#' im <- IntervalMap(c(1, 10), ends = c(5, 15))
+#' length(im)  # 2
 length.IntervalMap <- function(x) {
     .map_input(x)
 
@@ -274,39 +277,28 @@ length.IntervalMap <- function(x) {
 #' @param ... Additional arguments (ignored)
 #' @export
 #' @return Invisibly returns the IntervalMap object
+#' @examples
+#' im <- IntervalMap(c(1, 10), ends = c(5, 15), values = c("A", "B"))
+#' print(im)
 print.IntervalMap <- function(x, ...) {
     .map_input(x)
 
     n <- length(x)
     cat("IntervalMap with", n, "intervals\n")
-    if (n > 0 && n <= 10) {
-        for (i in seq_len(n)) {
-            interval <- at(x, i)
-            cat(sprintf("  [%d] %d-%d", i, interval$start, interval$end))
-            if (!is.null(interval$value)) {
-                cat(sprintf(" -> %s", paste(as.character(interval$value), collapse = ", ")))
-            }
-            cat("\n")
-        }
-    } else if (n > 10) {
-        for (i in seq_len(3)) {
-            interval <- at(x, i)
-            cat(sprintf("  [%d] %d-%d", i, interval$start, interval$end))
-            if (!is.null(interval$value)) {
-                cat(sprintf(" -> %s", paste(as.character(interval$value), collapse = ", ")))
-            }
-            cat("\n")
-        }
-        cat("  ...\n")
-        for (i in seq.int(from = n-2, to = n)) {
-            interval <- at(x, i)
-            cat(sprintf("  [%d] %d-%d", i, interval$start, interval$end))
-            if (!is.null(interval$value)) {
-                cat(sprintf(" -> %s", paste(as.character(interval$value), collapse = ", ")))
-            }
-            cat("\n")
-        }
+    if (n == 0L) return(invisible(x))
+    shown <- if (n <= 10L) seq_len(n) else c(seq_len(3L), seq.int(n - 2L, n))
+    values <- get_all_values(x)[shown]
+    has_value <- !vapply(values, is.null, logical(1))
+    value_text <- vapply(values, function(v) {
+        paste(as.character(v), collapse = ", ")
+    }, character(1))
+    value_text <- ifelse(has_value, paste0(" -> ", value_text), "")
+    lines <- sprintf("  [%d] %d-%d%s", shown, get_all_starts(x)[shown],
+        get_all_ends(x)[shown], value_text)
+    if (n > 10L) {
+        lines <- c(lines[seq_len(3L)], "  ...", lines[seq.int(4L, 6L)])
     }
+    cat(lines, sep = "\n")
     invisible(x)
 }
 
@@ -316,6 +308,9 @@ print.IntervalMap <- function(x, ...) {
 #' @param i Index (1-based in R)
 #' @return List with start, end, and value components
 #' @export
+#' @examples
+#' im <- IntervalMap(c(1, 10), ends = c(5, 15), values = c("A", "B"))
+#' im[2]
 `[.IntervalMap` <- function(x, i) {
     .map_input(x)
 

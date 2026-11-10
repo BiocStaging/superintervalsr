@@ -1,3 +1,18 @@
+Changes in version 0.99.8
+
+* Address Bioconductor review: combine the two vignettes into a single
+  BiocStyle vignette with introduction, installation section, table of
+  contents and a SummarizedExperiment integration example.
+* Add BiocType field and BiocStyle to Suggests.
+* Add examples to all exported help pages.
+* Use internal accessors instead of direct slot access; vectorize genomic
+  query dispatch, print method and per-row metadata conversion.
+* Check for user interrupts in long-running C++ loops.
+* Fix overlaps on circular sequences such as MT. Ranges that run past the
+  end of a circular sequence now wrap around, matching GenomicRanges.
+* Rewrite README and vignette text, and refresh benchmark results.
+* Remove developer scripts (benchmark.R, build.sh) from the repository.
+
 Changes in version 0.99.7
 
 * Use one native genomic index per chromosome with strand filtering in C++.

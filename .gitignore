@@ -7,3 +7,12 @@ src/*.dll
 *.Rcheck/
 *.BiocCheck/
 genomic-benchmark/
+*.so
+*.o
+*.dll
+.Rproj.user/
+.Rhistory
+.RData
+*.Rproj
+vignettes/*.html
+vignettes/*.R

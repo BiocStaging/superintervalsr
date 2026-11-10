@@ -17,3 +17,7 @@ Invisibly returns the IntervalMap object
 \description{
 Print method for IntervalMap
 }
+\examples{
+im <- IntervalMap(c(1, 10), ends = c(5, 15), values = c("A", "B"))
+print(im)
+}

@@ -1,0 +1,347 @@
+---
+title: "Fast repeated overlap queries with superintervalsr"
+author:
+- name: Kez Cleal
+  affiliation: Cardiff University
+package: superintervalsr
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{Fast repeated overlap queries with superintervalsr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Introduction
+
+Many analyses need to know which features overlap which ranges. Reads are
+assigned to genes. Peaks are matched to promoters. Variants are matched to
+exons. In Bioconductor you do this with `findOverlaps()` and `countOverlaps()`
+from `r Biocpkg("GenomicRanges")`.
+
+GenomicRanges builds an index of the subject, called an NCList, each time you
+call these functions. You can also build it once yourself with `GNCList()`.
+
+`superintervalsr` gives you a different index for the subject, based on the
+SuperIntervals algorithm. It stores intervals in one sorted array, with a
+second small array that lets a query skip intervals that cannot overlap. This
+is compact and fast to search. It helps most when you query the same
+annotation many times, for example:
+
+* annotating peaks from many samples against one set of genes
+* counting overlaps for millions of reads
+* scanning many windows across a genome
+
+The package fits into existing Bioconductor code:
+
+* `SuperIntervalMap()` takes a `GRanges` and returns an index. You pass it to
+`findOverlaps()` or `countOverlaps()` in place of the `GRanges`.
+* Chromosome and strand are matched as in GenomicRanges. The `Hits` you get
+back point at rows of your original `GRanges`, so its metadata is easy to
+recover.
+* Options the index does not handle itself, such as `type = "within"` or a
+`maxgap`, are passed on to GenomicRanges. You always get the same answer.
+
+The package also has a lower-level `IntervalMap` class for plain integer
+intervals. It adds operations such as merge, gaps and flank.
+
+When should you use it? For a single query, plain GenomicRanges is simpler and
+fast enough. When you query the same subject repeatedly, building a
+`SuperIntervalMap` once makes each query faster. The README has timings
+against both a plain `GRanges` and a prebuilt `GNCList`.
+
+# Installation
+
+Install from Bioconductor:
+
+```{r install, eval = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("superintervalsr")
+```
+
+Building from source needs a C++17 compiler. The examples also use
+`r Biocexptpkg("airway")` and `r Biocpkg("SummarizedExperiment")`. Install
+these the same way.
+
+```{r load, message = FALSE}
+library(GenomicRanges)
+library(SummarizedExperiment)
+library(superintervalsr)
+```
+
+Some function names here, such as `count()`, `coverage()`, `gaps()` and
+`flank()`, also exist in other packages. We load `superintervalsr` last so its
+versions are used. Elsewhere, write `superintervalsr::count()` to be sure.
+
+# Using SuperIntervalMap with GRanges
+
+## A small example
+
+Build the index once. The `GRanges` can span several chromosomes and both
+strands.
+
+```{r small-index}
+genes <- GRanges(
+    seqnames = c("chr1", "chr1", "chr1", "chr2"),
+    ranges = IRanges(start = c(20, 1, 8, 1), end = c(30, 10, 18, 10)),
+    strand = c("+", "-", "*", "+"),
+    gene_id = c("GENE_C", "GENE_A", "GENE_B", "GENE_D")
+)
+gene_index <- SuperIntervalMap(genes)
+gene_index
+```
+
+Use the index wherever you would use the `GRanges` subject:
+
+```{r small-query}
+peaks <- GRanges(c("chr1", "chr1", "chr2"),
+    IRanges(c(5, 15, 40), c(8, 22, 45)), strand = "+")
+hits <- findOverlaps(peaks, gene_index)
+hits
+countOverlaps(peaks, gene_index)
+```
+
+Subject hits are row numbers in `genes`. `as_granges()` returns the original
+`GRanges`, so you can look up any metadata column:
+
+```{r small-annotate}
+overlapping_rows <- as(hits, "List")
+mcols(peaks)$genes <- extractList(as_granges(gene_index)$gene_id,
+    overlapping_rows)
+peaks
+```
+
+The counts are the same as with `genes` as the subject:
+
+```{r small-check}
+stopifnot(identical(countOverlaps(peaks, gene_index),
+                    countOverlaps(peaks, genes)))
+```
+
+Strand is used by default, and `"*"` matches either strand. To ignore strand:
+
+```{r small-strand}
+countOverlaps(peaks, gene_index, ignore.strand = TRUE)
+```
+
+## An RNA-seq example
+
+The `r Biocexptpkg("airway")` data hold RNA-seq counts from human airway
+smooth muscle cells, stored as a `RangedSummarizedExperiment`. Its
+`rowRanges()` hold the exons of each gene.
+
+The question: for the most highly expressed genes, which other genes overlap
+their promoter?
+
+First, turn each gene into one range covering all its exons, and add the mean
+read count. Genes with exons on more than one chromosome or strand are
+dropped.
+
+```{r airway-data}
+data("airway", package = "airway")
+
+gene_spans <- range(rowRanges(airway))
+single_span <- lengths(gene_spans) == 1L
+gene_bodies <- unlist(gene_spans[single_span], use.names = FALSE)
+names(gene_bodies) <- names(gene_spans)[single_span]
+mcols(gene_bodies)$mean_count <- rowMeans(assay(airway))[single_span]
+gene_bodies
+```
+
+We will query these gene bodies, so index them once:
+
+```{r airway-index}
+body_index <- SuperIntervalMap(gene_bodies)
+body_index
+```
+
+Take promoters of the top 200 genes and find what they overlap:
+
+```{r airway-query}
+top_genes <- head(gene_bodies[order(-mcols(gene_bodies)$mean_count)], 200)
+promoter_windows <- promoters(top_genes, upstream = 2000, downstream = 200)
+
+promoter_hits <- findOverlaps(promoter_windows, body_index)
+promoter_hits
+```
+
+Each hit links a promoter to a gene body. Every promoter overlaps its own gene,
+so drop those and list the neighbours:
+
+```{r airway-annotate}
+neighbours <- data.frame(
+    promoter_of = names(promoter_windows)[queryHits(promoter_hits)],
+    overlaps_gene = names(gene_bodies)[subjectHits(promoter_hits)],
+    neighbour_mean_count =
+        mcols(gene_bodies)$mean_count[subjectHits(promoter_hits)]
+)
+neighbours <- neighbours[neighbours$promoter_of != neighbours$overlaps_gene, ]
+head(neighbours)
+```
+
+Results can go straight back into the experiment. Here we store the number of
+neighbouring genes in `rowData()`, so it stays with the counts:
+
+```{r airway-rowdata}
+top_se <- airway[names(top_genes), ]
+other_genes <- countOverlaps(promoter_windows, body_index) - 1L
+rowData(top_se)$promoter_neighbours <- other_genes
+table(rowData(top_se)$promoter_neighbours)
+```
+
+Finally, check the hits match GenomicRanges, with and without strand:
+
+```{r airway-check}
+same_pairs <- function(a, b) {
+    pairs_a <- sort(paste(queryHits(a), subjectHits(a)))
+    pairs_b <- sort(paste(queryHits(b), subjectHits(b)))
+    identical(pairs_a, pairs_b)
+}
+agree <- vapply(c(FALSE, TRUE), function(ignore) {
+    same_pairs(
+        findOverlaps(promoter_windows, body_index, ignore.strand = ignore),
+        findOverlaps(promoter_windows, gene_bodies, ignore.strand = ignore))
+}, logical(1))
+stopifnot(all(agree))
+```
+
+## Things to know
+
+* You get the same hits as GenomicRanges, sorted by query. Within one query
+the order may differ.
+* The index lives in C++ memory, so `saveRDS()` cannot save it. Save
+`as_granges(index)` and rebuild after loading.
+* The index does not change when you edit the `GRanges`. Build a new one.
+* Circular sequences, such as the mitochondrial genome, are handled by
+GenomicRanges. Ranges there can wrap past the end of the sequence.
+
+# Plain intervals with IntervalMap
+
+`IntervalMap` is the structure underneath `SuperIntervalMap`. It holds integer
+intervals on one coordinate line, such as one chromosome. It ignores strand.
+Each interval can carry any R value. Use it when you are not working with
+`GRanges`, or when you need the extra operations below.
+
+## Creating a map
+
+Build a map from start and end vectors, a `data.frame`, or a `GRanges` on one
+chromosome. Both ends of each interval are included, as in `IRanges`.
+
+```{r im-create}
+im <- IntervalMap(c(10, 15, 30), ends = c(20, 25, 40),
+    values = c("Gene A", "Gene B", "Gene C"))
+im
+
+chr1_map <- IntervalMap(genes, seqname = "chr1", value_column = "gene_id")
+chr1_map
+```
+
+You can also add intervals one at a time. Call `build()` when you are done
+and before you query. The constructors above do this for you.
+
+```{r im-add}
+im2 <- IntervalMap()
+add(im2, 10, 20, "Gene A")
+add(im2, 15, 25, "Gene B")
+build(im2)
+```
+
+`add()` and `build()` change the map in place. Unlike most R objects,
+`im3 <- im2` does not make a copy.
+
+## Querying a map
+
+Each function returns a different view of the overlapping intervals:
+
+```{r im-query}
+has_overlaps(im, 12, 18)
+count(im, 12, 18)
+search_values(im, 12, 18)
+search_items(im, 12, 18)
+search_point(im, 35)
+```
+
+`search_idxs()` returns positions in the map. `at()` returns the interval at a
+position. Positions follow the sorted order made by `build()`, not your input
+order. To get back to your input rows, store the row number as the value.
+
+```{r im-idx}
+idx <- search_idxs(im, 12, 18)
+at(im, idx[1])
+```
+
+## Many queries at once
+
+Every call from R into C++ has a small cost. With thousands of queries, that
+cost can outweigh the search itself. The `.batch` functions take vectors of
+starts and ends and run every query in one call.
+
+Both versions below give the same answer. The batch version skips the R loop:
+
+```{r im-batch}
+query_starts <- c(5, 12, 22, 35)
+query_ends <- c(8, 18, 32, 50)
+
+one_at_a_time <- vapply(seq_along(query_starts), function(i) {
+    count(im, query_starts[i], query_ends[i])
+}, integer(1))
+all_at_once <- count.batch(im, query_starts, query_ends)
+
+stopifnot(identical(one_at_a_time, all_at_once))
+all_at_once
+search_idxs.batch(im, query_starts, query_ends)
+```
+
+## Interval operations
+
+These return a new map, ready to query. They work like `reduce()`, `gaps()`
+and `flank()` in IRanges, but keep each interval's value.
+
+```{r im-ops}
+merged <- merge_overlaps(im)
+search_keys(merged, 1, 50)
+
+uncovered <- gaps(merged, 1, 50)
+search_keys(uncovered, 1, 50)
+
+windows <- expand(im, 5, 5, lo = 1, hi = 50)
+search_keys(windows, 1, 50)
+
+span(im)
+```
+
+Merging keeps one value per merged region. `intersection()` keeps values from
+its first argument and can return overlapping pieces. Run `merge_overlaps()`
+on the result to join them.
+
+`coverage()` returns the number of overlapping intervals and their total
+overlap with the query. Each interval counts on its own, so shared bases count
+more than once.
+
+```{r im-coverage}
+coverage(im, 10, 40)
+```
+
+## Back to GRanges
+
+`as_granges()` turns `search_items()` output into a `GRanges`. An
+`IntervalMap` does not know its chromosome, so you supply it:
+
+```{r im-granges}
+chr1_items <- search_items(chr1_map, 5, 22)
+as_granges(chr1_items, seqname = "chr1", valuename = "gene_id")
+```
+
+# Session information
+
+```{r session-info}
+sessionInfo()
+```

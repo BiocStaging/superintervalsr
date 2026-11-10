@@ -101,3 +101,53 @@ test_that("native genomic indexes survive collection and reject serialization", 
     restored <- unserialize(serialize(index, NULL))
     expect_error(IRanges::countOverlaps(query, restored), "recreate maps")
 })
+
+test_that("queries on circular sequences match GenomicRanges", {
+    si <- Seqinfo::Seqinfo(c("chr1", "chrM"), c(1000L, 100L), c(FALSE, TRUE))
+    subject <- GenomicRanges::GRanges(c("chrM", "chrM", "chr1"),
+        IRanges::IRanges(c(90, 10, 5), c(100, 20, 15)),
+        strand = c("+", "-", "+"), seqinfo = si)
+    # The first query wraps past the end of the circular chrM.
+    query <- GenomicRanges::GRanges(c("chrM", "chrM", "chr1"),
+        IRanges::IRanges(c(-5, 15, 1), c(5, 18, 10)),
+        strand = c("+", "*", "+"), seqinfo = si)
+    index <- SuperIntervalMap(subject)
+    for (ignore in c(FALSE, TRUE)) {
+        expect_identical(
+            hit_pairs(IRanges::findOverlaps(query, index,
+                                            ignore.strand = ignore)),
+            hit_pairs(GenomicRanges::findOverlaps(query, subject,
+                                                  ignore.strand = ignore)))
+        expect_identical(
+            IRanges::countOverlaps(query, index, ignore.strand = ignore),
+            GenomicRanges::countOverlaps(query, subject,
+                                         ignore.strand = ignore))
+    }
+})
+
+test_that("wrapping queries and subjects on circular sequences match", {
+    si <- Seqinfo::Seqinfo("chrM", 100L, TRUE)
+    query <- GenomicRanges::GRanges("chrM",
+        IRanges::IRanges(c(-20, 95, 50, -300, 1), c(3, 130, 60, 10, 100)),
+        strand = c("+", "-", "*", "+", "*"), seqinfo = si)
+    inside <- GenomicRanges::GRanges("chrM",
+        IRanges::IRanges(c(1, 90, 40, 98), c(5, 100, 55, 99)),
+        strand = c("+", "-", "+", "*"), seqinfo = si)
+    # A subject range past the end of the circle uses the GenomicRanges path.
+    wrapping <- c(inside, GenomicRanges::GRanges("chrM",
+        IRanges::IRanges(95, 110), strand = "+", seqinfo = si))
+    for (subject in list(inside, wrapping)) {
+        index <- SuperIntervalMap(subject)
+        for (ignore in c(FALSE, TRUE)) {
+            expect_identical(
+                hit_pairs(IRanges::findOverlaps(query, index,
+                                                ignore.strand = ignore)),
+                hit_pairs(GenomicRanges::findOverlaps(query, subject,
+                                                      ignore.strand = ignore)))
+            expect_identical(
+                IRanges::countOverlaps(query, index, ignore.strand = ignore),
+                GenomicRanges::countOverlaps(query, subject,
+                                             ignore.strand = ignore))
+        }
+    }
+})

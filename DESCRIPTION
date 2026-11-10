@@ -1,7 +1,7 @@
 Package: superintervalsr
 Type: Package
 Title: Fast, Memory-Efficient Interval Operations for Genomics
-Version: 0.99.7
+Version: 0.99.8
 Authors@R: person("Kez", "Cleal",
                   email = "clealk@cardiff.ac.uk",
                   role = c("aut", "cre"),
@@ -14,6 +14,7 @@ Description: Provides a fast, memory-efficient data structure for interval
 License: MIT + file LICENSE
 URL: https://github.com/kcleal/superintervalsr
 BugReports: https://github.com/kcleal/superintervalsr/issues
+BiocType: Software
 biocViews: Infrastructure, DataRepresentation, GenomeAnnotation, Sequencing
 Depends: R (>= 4.6.0)
 Imports:
@@ -21,9 +22,11 @@ Imports:
     S4Vectors,
     IRanges,
     GenomicRanges,
+    Seqinfo,
     methods
 LinkingTo: Rcpp
 Suggests:
+    BiocStyle,
     knitr,
     rmarkdown,
     testthat (>= 3.0.0),

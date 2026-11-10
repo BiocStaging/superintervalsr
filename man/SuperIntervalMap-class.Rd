@@ -32,6 +32,13 @@ The original ranges, sequence information, names and metadata are retained.
 construct a new object when the subject ranges change.}
 }}
 
+\examples{
+library(GenomicRanges)
+genes <- GRanges(c("chr1", "chr2"), IRanges(c(1, 10), c(5, 20)))
+index <- SuperIntervalMap(genes)
+length(index)
+index
+}
 \seealso{
 \code{\link[=SuperIntervalMap]{SuperIntervalMap()}}
 }

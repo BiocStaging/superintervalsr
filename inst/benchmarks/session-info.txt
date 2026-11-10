@@ -1,12 +1,12 @@
 R version 4.6.1 (2026-06-24)
 Platform: aarch64-apple-darwin20.0.0
-Running under: macOS Tahoe 26.7.1
+Running under: macOS Tahoe 26.7.2
 
 Matrix products: default
 BLAS/LAPACK: /Users/sbi8kc2/Documents/data/superintervals_dev/bioc-devel/environment/lib/libopenblas.0.dylib;  LAPACK version 3.12.0
 
 locale:
-[1] C.UTF-8/C.UTF-8/C.UTF-8/C/C.UTF-8/C.UTF-8
+[1] C
 
 time zone: Europe/London
 tzcode source: system (macOS)

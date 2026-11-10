@@ -1,155 +1,176 @@
 # superintervalsr
 
-`superintervalsr` is an R wrapper for the SuperIntervals C++ library, designed
-for repeated overlap queries on an indexed collection of intervals. It is being
-prepared for Bioconductor submission and is not yet available there.
+Fast overlap queries for genomic ranges in R.
+
+`superintervalsr` wraps the [SuperIntervals](https://github.com/kcleal/superintervals)
+C++ library. You build an index once, then query it many times. It works with
+`GRanges` and the usual `findOverlaps()` and `countOverlaps()` functions.
+
+The package is under review at Bioconductor.
 
 ## Installation
 
-Install dependencies from CRAN and Bioconductor, then install the source package:
-
 ```r
-install.packages(c("Rcpp", "remotes"))
-install.packages("BiocManager")
-BiocManager::install(c("S4Vectors", "IRanges", "GenomicRanges"))
+install.packages(c("BiocManager", "remotes"))
+BiocManager::install(c("S4Vectors", "IRanges", "GenomicRanges", "Seqinfo"))
 remotes::install_github("kcleal/superintervalsr")
 ```
 
-A C++17 compiler is required. See `BIOCONDUCTOR.md` for development checks and
-submission steps.
+You need a C++17 compiler.
 
-## Quick start
+## With GRanges
+
+Index the subject once with `SuperIntervalMap()`. Then pass it to
+`findOverlaps()` or `countOverlaps()` in place of a `GRanges`.
 
 ```r
+library(GenomicRanges)
 library(superintervalsr)
-im <- IntervalMap(c(20, 1, 5), ends = c(30, 10, 15),
-                  values = c("C", "A", "B"))
-count.batch(im, c(7, 25), c(12, 35))
-search_items(im, 7, 12)
-search_point(im, 10)
-coverage(im, 1, 15) # count = 2, total_coverage = 21 inclusive bases
 
-# Incremental loading: build once after adding all intervals.
+genes <- GRanges(c("chr1", "chr1", "chr2"),
+    IRanges(c(20, 1, 1), c(30, 10, 10)),
+    strand = c("+", "*", "-"),
+    gene_id = c("C", "A", "D"))
+index <- SuperIntervalMap(genes)
+
+query <- GRanges(c("chr1", "chr2"), IRanges(c(5, 3), c(25, 8)),
+    strand = c("+", "-"))
+hits <- findOverlaps(query, index)
+countOverlaps(query, index)
+
+# Subject hits point at rows of the original GRanges.
+as_granges(index)[subjectHits(hits)]
+```
+
+Results match GenomicRanges:
+
+- Strand works the same way. `"*"` matches either strand. Use
+  `ignore.strand = TRUE` to ignore strand.
+- Options the index does not handle itself are passed to GenomicRanges. These
+  are `type` other than `"any"`, a `maxgap` or `minoverlap`, zero-width ranges,
+  and circular sequences such as chrM.
+
+Some things to know:
+
+- The index does not update when you change the `GRanges`. Build a new one.
+- You cannot save the index with `saveRDS()`. Save `as_granges(index)` and
+  rebuild after loading.
+
+The vignette has a full example using RNA-seq data from the `airway` package.
+
+## Plain intervals
+
+`IntervalMap` is the lower-level structure. It holds integer intervals on one
+coordinate line, such as a single chromosome, and ignores strand. Each interval
+can carry any R value.
+
+```r
+im <- IntervalMap(c(20, 1, 5), ends = c(30, 10, 15),
+    values = c("C", "A", "B"))
+
+search_items(im, 7, 12)              # intervals overlapping 7-12
+search_point(im, 10)                 # values of intervals covering 10
+count.batch(im, c(7, 25), c(12, 35)) # one count per query
+```
+
+You can also add intervals one at a time. Call `build()` before you query:
+
+```r
 im <- IntervalMap()
-reserve(im, 1000)
 add(im, 1, 10, "A")
 add(im, 5, 15, "B")
 build(im)
 search_values(im, 7, 12)
 ```
 
-Intervals and queries are **closed**: both endpoints are included. Inputs must
-be finite whole numbers in the R integer range (excluding `NA`). Constructors
-validate coordinates and build automatically. Query functions retain a thin,
-low-overhead interface: callers must provide valid query ranges and call
-`build()` after every batch of additions. Index state is not checked per query.
+Points to keep in mind:
 
-`build()` sorts starts ascending and ends descending within tied starts. Search
-indices address this internal order, not original input rows. Hit order and the
-choice of metadata among identical coordinate ties are unspecified. For mapping
-back to source rows, store row IDs as values.
+- Both ends of an interval are included, as in `IRanges`.
+- Coordinates must be whole numbers in the R integer range, with no `NA`.
+- Queries do not check their input or whether the map is built. This keeps
+  them fast.
+- `build()` sorts the intervals. Positions from `search_idxs()` refer to this
+  sorted order, not your input order. To get back to input rows, store the row
+  number as the value.
+- Maps change in place. `other <- im` does not make a copy.
 
-## Genomic ranges
+### Interval operations
 
-Use the S4 `SuperIntervalMap` adapter to index GRanges with multiple chromosomes,
-strand, sequence information and metadata. Build once and reuse the subject:
+These return a new, ready-to-query map:
 
-```r
-library(GenomicRanges)
-gr <- GRanges(c("chr1", "chr1", "chr2"),
-              IRanges(c(20, 1, 1), c(30, 10, 10)),
-              strand = c("+", "*", "-"),
-              gene_id = c("C", "A", "D"))
-index <- SuperIntervalMap(gr)
-query <- GRanges(c("chr1", "chr2"), IRanges(c(5, 3), c(25, 8)),
-                 strand = c("+", "-"))
-hits <- findOverlaps(query, index)
-countOverlaps(query, index)
-as_granges(index)[subjectHits(hits)]
-```
+| Function | Result |
+|---|---|
+| `merge_overlaps(x)` | overlapping intervals joined |
+| `union_with(x, y)` | regions in either map, joined |
+| `intersection(x, y)` | regions in both maps |
+| `difference(x, y)` | regions in `x` but not `y` |
+| `symmetric_difference(x, y)` | regions in exactly one map |
+| `gaps(x, lo, hi)` | uncovered regions between `lo` and `hi` |
+| `expand(x, left, right)` | each interval widened |
+| `flank(x, left, right)` | regions beside each interval |
+| `unique_intervals(x)` | duplicate intervals removed |
 
-Hits refer to original subject rows. Strand matching follows GenomicRanges,
-including wildcard `"*"`; use `ignore.strand = TRUE` to ignore it. Advanced overlap
-options and zero-width features use GenomicRanges directly. The genomic adapter
-uses one index per sequence, with strand filtering in C++. Reconstruct it
-after editing subject coordinates; save its original GRanges for serialization.
-The workflow vignette includes a real RNA-seq example using `airway` annotations.
+`span(x)` gives the start and end that cover everything, or `NULL` if empty.
 
-The low-level `IntervalMap(gr, seqname = "chr1")` interface still indexes one
-sequence and ignores strand. Its search indices address sorted map positions;
-store row IDs as values when mapping low-level hits to original input rows.
+Notes on values and edge cases:
 
-## GRanges interface benchmarks
+- Merge and union keep one value per joined region.
+- Intersection and difference keep values from `x`. Intersection can return
+  overlapping pieces; run `merge_overlaps()` on the result to join them.
+- Intervals that touch but do not overlap stay separate.
+- `coverage(x, start, end)` returns the hit count and the total overlap width.
+  Each interval is counted on its own, so shared bases count more than once.
 
-On macOS ARM64 with R 4.6.1/Bioconductor 3.24 (14 October 2026), the
-chromosome- and strand-aware interface produced the same counts and hit pairs as
-GenomicRanges. The benchmark uses real airway gene spans and two synthetic
-subjects across 22 chromosomes, with 100, 1,000, 10,000, 100,000 and 1,000,000
-promoter queries.
-Both strand-aware and strand-ignored queries are tested. Timings below are
-medians of five repetitions, with ten calls per repetition through 10,000
-queries and one call per repetition at 100,000 and 1,000,000 queries. Subject
-indexes are built once and construction time is recorded separately. Units are
-milliseconds per batch.
+Names such as `coverage()`, `gaps()` and `flank()` also exist in other
+Bioconductor packages. Use `superintervalsr::coverage()` if in doubt.
+
+## Benchmarks
+
+Measured on macOS ARM64, R 4.6.1, Bioconductor 3.24.
+Subjects are airway gene spans and two random sets spread over 22
+chromosomes. Queries are promoter windows. Every result was checked against
+GenomicRanges before timing.
+
+Times are milliseconds per call, median of five runs, strand-aware. Lower is
+better. "Prebuilt GNCList" is GenomicRanges with its index built in advance.
+"GRanges" builds the index inside each call.
 
 | Subject | Operation | Queries | SuperIntervals | Prebuilt GNCList | GRanges |
 |---|---|---:|---:|---:|---:|
-| airway | countOverlaps | 10,000 | 2.2 | 10.8 | 16.8 |
-| airway | findOverlaps | 10,000 | 3.0 | 10.6 | 17.0 |
-| synthetic_10000 | countOverlaps | 10,000 | 1.4 | 6.8 | 7.3 |
-| synthetic_10000 | findOverlaps | 10,000 | 2.0 | 7.0 | 8.0 |
-| synthetic_100000 | countOverlaps | 10,000 | 1.9 | 12.6 | 16.4 |
-| synthetic_100000 | findOverlaps | 10,000 | 2.9 | 13.0 | 17.0 |
+| airway | countOverlaps | 10,000 | 2.6 | 11 | 18 |
+| airway | findOverlaps | 10,000 | 3.2 | 11 | 17 |
+| airway | countOverlaps | 1,000,000 | 110 | 184 | 200 |
+| airway | findOverlaps | 1,000,000 | 160 | 197 | 227 |
+| synthetic_10000 | countOverlaps | 10,000 | 1.4 | 6.6 | 7.4 |
+| synthetic_10000 | findOverlaps | 10,000 | 1.9 | 6.8 | 7.7 |
+| synthetic_10000 | countOverlaps | 1,000,000 | 90 | 105 | 119 |
+| synthetic_10000 | findOverlaps | 1,000,000 | 159 | 127 | 138 |
+| synthetic_100000 | countOverlaps | 10,000 | 2.0 | 13 | 17 |
+| synthetic_100000 | findOverlaps | 10,000 | 3.3 | 16 | 17 |
+| synthetic_100000 | countOverlaps | 1,000,000 | 130 | 190 | 220 |
+| synthetic_100000 | findOverlaps | 1,000,000 | 216 | 247 | 268 |
 
-`GNCList(subject)` is GenomicRanges' prebuilt Nested Containment List index.
-It provides the repeated-query baseline; the GRanges column passes the original
-subject directly to GenomicRanges, which performs preprocessing during the call.
+GenomicRanges has a fixed cost of several milliseconds per call. SuperIntervals
+does not, so it is fastest relative to GenomicRanges below about 100,000
+queries. At a million queries, `countOverlaps()` is still faster.
+`findOverlaps()` is about even, and slower on the small random subject.
 
-### Index construction
+Index build time, in milliseconds:
 
-These are median construction times over five repetitions, in milliseconds.
-Both constructors receive an existing GRanges; creating that input is excluded.
-
-| Subject | Features | SuperIntervalMap | GNCList |
+| Subject | Ranges | SuperIntervalMap | GNCList |
 |---|---:|---:|---:|
-| airway | 63,677 | 8 | 17 |
-| synthetic_10000 | 10,000 | 1 | 6 |
-| synthetic_100000 | 100,000 | 13 | 19 |
-
-The SuperIntervalMap timings include the complete R adapter: splitting subjects
-by chromosome and building one native index per chromosome.
-
+| airway | 63,677 | 8.0 | 16 |
+| synthetic_10000 | 10,000 | 2.0 | 5.0 |
+| synthetic_100000 | 100,000 | 13 | 20 |
 
 ![GRanges query benchmark](inst/benchmarks/query-times.png)
 
-The [complete results](inst/benchmarks/queries.csv),
-[construction timings](inst/benchmarks/build.csv), and
-[session information](inst/benchmarks/session-info.txt) are included.
-To reproduce from the repository with the required vignette dependencies:
+Full results: [queries](inst/benchmarks/queries.csv),
+[build times](inst/benchmarks/build.csv),
+[session info](inst/benchmarks/session-info.txt).
+
+To rerun:
 
 ```sh
 Rscript inst/scripts/benchmark-genomic.R genomic-benchmark
 ```
-
-## Set operations
-
-`merge_overlaps()`, `union_with()`, `intersection()`, `difference()`,
-`symmetric_difference()`, `gaps()`, `expand()`, `flank()` and
-`unique_intervals()` return independent, already indexed maps. `span()` returns
-the enclosing start/end pair or `NULL` for an empty map.
-
-Merge and union coalesce overlaps, but keep adjacent non-overlapping intervals
-separate. Intersection returns one piece per overlapping pair, retaining the
-left input's value; use `merge_overlaps()` for disjoint output. Difference
-retains the left input's metadata, while expansion and flanks inherit each
-source interval's value. These operations do not reconcile all metadata from
-both inputs. Consult the help pages for exact value semantics.
-
-`coverage()` returns the number of hits and the sum of inclusive intersection
-widths. Shared bases are counted once per stored interval, so this is not union
-width or the per-base coverage returned by `IRanges::coverage()`.
-
-Maps mutate by reference: `other <- im` aliases the same map. External-pointer
-maps cannot be restored with `readRDS()`; save coordinates and values and
-reconstruct them. Qualify names such as `superintervalsr::coverage()` and
-`superintervalsr::flank()` when working alongside Bioconductor packages.

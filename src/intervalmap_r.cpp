@@ -1,9 +1,19 @@
-// R wrapper maintenance assisted by OpenAI Codex (October 2026).
+// Assisted-by: OpenAI Codex (October 2026), R wrapper maintenance.
+// Assisted-by: Anthropic Claude (November 2026), user-interrupt checks.
 #include <Rcpp.h>
+#include <memory>
 #include "../inst/include/superintervals.hpp"
 
 using namespace Rcpp;
 using namespace si;
+
+// Long loops poll for Ctrl-C / Esc every INTERRUPT_STRIDE iterations. Rcpp
+// converts an interrupt into a C++ exception, so all heap state touched in
+// these loops must be owned by RAII objects (XPtr, std::unique_ptr, vectors).
+constexpr R_xlen_t INTERRUPT_STRIDE = 1 << 14;
+inline void poll_interrupt(R_xlen_t i) {
+    if ((i % INTERRUPT_STRIDE) == 0) Rcpp::checkUserInterrupt();
+}
 
 // Metadata is rooted by an R list attached to the external pointer. This avoids
 // per-value R_PreserveObject/R_ReleaseObject calls and their global linked list.
@@ -65,15 +75,16 @@ SEXP create_intervalmap_from_vectors(IntegerVector starts, IntegerVector ends, L
         stop("values must have the same length as starts and ends");
     }
 
-    IntervalMap<int, SEXP>* ptr = new IntervalMap<int, SEXP>();
+    auto ptr = std::make_unique<IntervalMap<int, SEXP>>();
     ptr->reserve(starts.size());
-    for (int i = 0; i < starts.size(); ++i) {
-        SEXP value = (values.size() > 0) ? values[i] : R_NilValue;
+    for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
+        SEXP value = (values.size() > 0) ? SEXP(values[i]) : R_NilValue;
         ptr->add(starts[i], ends[i], value);
     }
     ptr->build();  // Auto-build for convenience
 
-    Shield<SEXP> out(wrap_new_intervalmap(ptr));
+    Shield<SEXP> out(wrap_new_intervalmap(ptr.release()));
     return out;
 }
 
@@ -237,7 +248,8 @@ LogicalVector has_overlaps_batch(SEXP container, IntegerVector starts, IntegerVe
     auto si = checked_map(container);
     LogicalVector results(starts.size());
 
-    for (int i = 0; i < starts.size(); ++i) {
+    for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         results[i] = si->has_overlaps(starts[i], ends[i]);
     }
 
@@ -377,7 +389,8 @@ List search_idxs_batch(SEXP container, IntegerVector starts, IntegerVector ends)
 
     List results(starts.size());
 
-    for (int i = 0; i < starts.size(); ++i) {
+    for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         found_indices.clear();
         si->search_idxs(starts[i], ends[i], found_indices);
 
@@ -400,7 +413,8 @@ IntegerVector count_batch(SEXP container, IntegerVector starts, IntegerVector en
     auto si = checked_map(container);
     IntegerVector results(starts.size());
 
-    for (int i = 0; i < starts.size(); ++i) {
+    for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         results[i] = si->count(starts[i], ends[i]);
     }
 
@@ -419,7 +433,8 @@ List search_values_batch(SEXP container, IntegerVector starts, IntegerVector end
 
     List results(starts.size());
 
-    for (int i = 0; i < starts.size(); ++i) {
+    for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         found_values.clear();
         si->search_values(starts[i], ends[i], found_values);
 
@@ -544,6 +559,7 @@ SEXP create_genomic_index(IntegerVector starts, IntegerVector ends,
     XPtr<GenomicMap> map(new GenomicMap(), true);
     map->reserve(starts.size());
     for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         if (starts[i] == NA_INTEGER || ends[i] == NA_INTEGER ||
             starts[i] > ends[i])
             stop("Genomic coordinates must be non-missing valid integer ranges");
@@ -565,6 +581,7 @@ SEXP query_genomic_index(SEXP container, IntegerVector starts,
     if (count_only) {
         IntegerVector counts(starts.size());
         for (R_xlen_t i = 0; i < starts.size(); ++i) {
+            poll_interrupt(i);
             if (ignore_strand || strands[i] == 3) {
                 counts[i] = map->count(starts[i], ends[i]);
             } else {
@@ -582,6 +599,7 @@ SEXP query_genomic_index(SEXP container, IntegerVector starts,
     List results(starts.size());
     std::vector<int> rows;
     for (R_xlen_t i = 0; i < starts.size(); ++i) {
+        poll_interrupt(i);
         rows.clear();
         for (size_t k : map->search_idxs(starts[i], ends[i])) {
             const auto& feature = map->data[k];
